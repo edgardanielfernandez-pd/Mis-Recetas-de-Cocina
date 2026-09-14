@@ -87,7 +87,7 @@ st.markdown("""
 OPCIONES_METODO = ["Al Horno", "A la Olla / Cacerola", "Freidora de aire", "Sartén / Hornalla", "Sin cocción"]
 
 # --- ENCABEZADO ---
-st.title("🍳 Mi Recetario Inteligente")
+st.title("🍳 Mi Recetario Inteligente por E.D.F.")
 
 tab_ver, tab_indice, tab_agregar, tab_despensa = st.tabs([
     "📖 Ver y Editar Recetas",
