@@ -97,7 +97,7 @@ tab_ver, tab_indice, tab_agregar, tab_despensa = st.tabs([
 ])
 
 # ========================================================
-# TAB 1: VER, BUSCAR, EDITAR Y ELIMINAR RECETAS
+# TAB 1: VER, BUSCAR, EDITAR Y ELIMINAR RECETAS (ORDEN ALFABÉTICO)
 # ========================================================
 with tab_ver:
     busqueda_texto = st.text_input(
@@ -133,6 +133,9 @@ with tab_ver:
         termino = f"%{busqueda_texto.strip().lower()}%"
         query += " AND (LOWER(nombre) LIKE ? OR LOWER(ingredientes) LIKE ?)"
         params.extend([termino, termino])
+
+    # Ordenar alfabéticamente por nombre
+    query += " ORDER BY LOWER(nombre) ASC"
 
     df = pd.read_sql(query, conn, params=params)
 
