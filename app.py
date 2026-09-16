@@ -1,7 +1,7 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 import os
+from supabase import create_client, Client
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Mi Recetario", page_icon="🍳", layout="wide")
@@ -9,33 +9,18 @@ st.set_page_config(page_title="Mi Recetario", page_icon="🍳", layout="wide")
 CARPETA_VIDEOS = "VIDEOS"
 os.makedirs(CARPETA_VIDEOS, exist_ok=True)
 
-# --- BASE DE DATOS ---
-conn = sqlite3.connect("recetario.db", check_same_thread=False)
-c = conn.cursor()
+# --- CONEXIÓN A SUPABASE ---
+@st.cache_resource
+def init_supabase() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
 
-c.execute("""
-CREATE TABLE IF NOT EXISTS recetas (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nombre TEXT NOT NULL,
-    tipo_sabor TEXT NOT NULL,
-    metodo_coccion TEXT DEFAULT 'Al Horno',
-    es_airfryer INTEGER DEFAULT 0,
-    ingredientes TEXT NOT NULL,
-    pasos TEXT,
-    tipo_video TEXT,
-    origen_video TEXT,
-    probada INTEGER DEFAULT 0
-)
-""")
-conn.commit()
+supabase = init_supabase()
 
-# Migración automática si la columna metodo_coccion aún no existía
-c.execute("PRAGMA table_info(recetas)")
-columnas = [col[1] for col in c.fetchall()]
-if "metodo_coccion" not in columnas:
-    c.execute("ALTER TABLE recetas ADD COLUMN metodo_coccion TEXT DEFAULT 'Al Horno'")
-    c.execute("UPDATE recetas SET metodo_coccion = 'Freidora de aire' WHERE es_airfryer = 1")
-    conn.commit()
+def obtener_todas_recetas():
+    res = supabase.table("recetas").select("*").order("nombre").execute()
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
@@ -87,7 +72,8 @@ st.markdown("""
 OPCIONES_METODO = ["Al Horno", "A la Olla / Cacerola", "Freidora de aire", "Sartén / Hornalla", "Sin cocción"]
 
 # --- ENCABEZADO ---
-st.title("🍳 Mi Recetario Inteligente por E.D.F.")
+st.title("🍳 Mi Recetario Inteligente")
+st.title("🍳 Creado por E.D.F.")
 
 tab_ver, tab_indice, tab_agregar, tab_despensa = st.tabs([
     "📖 Ver y Editar Recetas",
@@ -97,7 +83,7 @@ tab_ver, tab_indice, tab_agregar, tab_despensa = st.tabs([
 ])
 
 # ========================================================
-# TAB 1: VER, BUSCAR, EDITAR Y ELIMINAR RECETAS (ORDEN ALFABÉTICO)
+# TAB 1: VER, BUSCAR, EDITAR Y ELIMINAR RECETAS
 # ========================================================
 with tab_ver:
     busqueda_texto = st.text_input(
@@ -113,38 +99,34 @@ with tab_ver:
     with col_f3:
         filtro_metodo = st.selectbox("Método de cocción:", ["Todos"] + OPCIONES_METODO)
 
-    query = "SELECT * FROM recetas WHERE 1=1"
-    params = []
+    df_base = obtener_todas_recetas()
 
-    if filtro_estado == "Para Repetir (Probadas)":
-        query += " AND probada = 1"
-    elif filtro_estado == "Por Probar (Pendientes)":
-        query += " AND probada = 0"
+    if not df_base.empty:
+        df = df_base.copy()
+        if filtro_estado == "Para Repetir (Probadas)":
+            df = df[df['probada'] == 1]
+        elif filtro_estado == "Por Probar (Pendientes)":
+            df = df[df['probada'] == 0]
 
-    if filtro_sabor != "Todos":
-        query += " AND tipo_sabor = ?"
-        params.append(filtro_sabor)
+        if filtro_sabor != "Todos":
+            df = df[df['tipo_sabor'] == filtro_sabor]
 
-    if filtro_metodo != "Todos":
-        query += " AND metodo_coccion = ?"
-        params.append(filtro_metodo)
+        if filtro_metodo != "Todos":
+            df = df[df['metodo_coccion'] == filtro_metodo]
 
-    if busqueda_texto.strip():
-        termino = f"%{busqueda_texto.strip().lower()}%"
-        query += " AND (LOWER(nombre) LIKE ? OR LOWER(ingredientes) LIKE ?)"
-        params.extend([termino, termino])
-
-    # Ordenar alfabéticamente por nombre
-    query += " ORDER BY LOWER(nombre) ASC"
-
-    df = pd.read_sql(query, conn, params=params)
+        if busqueda_texto.strip():
+            termino = busqueda_texto.strip().lower()
+            df = df[df['nombre'].str.lower().str.contains(termino, na=False) | 
+                    df['ingredientes'].str.lower().str.contains(termino, na=False)]
+    else:
+        df = pd.DataFrame()
 
     if df.empty:
         st.info("No se encontraron recetas con los filtros o términos de búsqueda indicados.")
     else:
         st.caption(f"Mostrando {len(df)} receta(s) encontrada(s)")
         for _, row in df.iterrows():
-            tag_sabor = "🍰 Dulce" if row['tipo_sabor'] == "Dulce" else "🧂 Salada"
+            tag_sabor = "🍰 Dulce" if row.get('tipo_sabor') == "Dulce" else "🧂 Salada"
             
             iconos_metodo = {
                 "Al Horno": "🔥 Al Horno",
@@ -153,9 +135,9 @@ with tab_ver:
                 "Sartén / Hornalla": "🍳 En Sartén",
                 "Sin cocción": "🥗 Sin Cocción"
             }
-            metodo_nombre = row['metodo_coccion'] if row['metodo_coccion'] else "Al Horno"
+            metodo_nombre = row.get('metodo_coccion') if row.get('metodo_coccion') else "Al Horno"
             tag_metodo = iconos_metodo.get(metodo_nombre, f"🍳 {metodo_nombre}")
-            tag_estado = "⭐ Para Repetir" if row['probada'] == 1 else "⏳ Por Probar"
+            tag_estado = "⭐ Para Repetir" if row.get('probada') == 1 else "⏳ Por Probar"
             
             with st.expander(f"{row['nombre']} — [{tag_sabor} | {tag_metodo}] — {tag_estado}"):
                 sub_ver, sub_editar = st.tabs(["👁️ Ver Receta", "✏️ Modificar / Eliminar"])
@@ -166,23 +148,22 @@ with tab_ver:
                     with col_info:
                         st.markdown(f"**Método:** {tag_metodo}")
                         st.markdown("#### 🛒 Ingredientes")
-                        for ing in [i.strip() for i in row['ingredientes'].split(",") if i.strip()]:
+                        for ing in [i.strip() for i in str(row.get('ingredientes', '')).split(",") if i.strip()]:
                             st.markdown(f"- {ing}")
                         st.markdown("#### 📝 Preparación")
-                        st.write(row['pasos'] if row['pasos'] else "Sin pasos detallados.")
+                        st.write(row.get('pasos') if row.get('pasos') else "Sin pasos detallados.")
                         
-                        marcado = st.checkbox("¿Receta probada / Para repetir?", value=bool(row['probada']), key=f"ver_probada_{row['id']}")
-                        if marcado != bool(row['probada']):
-                            c.execute("UPDATE recetas SET probada = ? WHERE id = ?", (1 if marcado else 0, row['id']))
-                            conn.commit()
+                        marcado = st.checkbox("¿Receta probada / Para repetir?", value=bool(row.get('probada')), key=f"ver_probada_{row['id']}")
+                        if marcado != bool(row.get('probada')):
+                            supabase.table("recetas").update({"probada": 1 if marcado else 0}).eq("id", row['id']).execute()
                             st.rerun()
 
                     with col_media:
                         st.markdown("#### 🎥 Video")
-                        if row['origen_video']:
-                            if row['tipo_video'] == 'local' and os.path.exists(row['origen_video']):
+                        if row.get('origen_video'):
+                            if row.get('tipo_video') == 'local' and os.path.exists(row['origen_video']):
                                 st.video(row['origen_video'])
-                            elif row['tipo_video'] == 'enlace':
+                            elif row.get('tipo_video') == 'enlace':
                                 st.video(row['origen_video'])
                             else:
                                 st.warning("Video local no encontrado en la carpeta VIDEOS.")
@@ -195,16 +176,16 @@ with tab_ver:
                         edit_nombre = st.text_input("Nombre", value=row['nombre'])
                         col_e1, col_e2 = st.columns(2)
                         with col_e1:
-                            edit_sabor = st.radio("Sabor", ["Salada", "Dulce"], index=0 if row['tipo_sabor'] == "Salada" else 1, horizontal=True)
+                            edit_sabor = st.radio("Sabor", ["Salada", "Dulce"], index=0 if row.get('tipo_sabor') == "Salada" else 1, horizontal=True)
                         with col_e2:
                             idx_metodo = OPCIONES_METODO.index(metodo_nombre) if metodo_nombre in OPCIONES_METODO else 0
                             edit_metodo = st.selectbox("Método de cocción", OPCIONES_METODO, index=idx_metodo)
                         
-                        edit_ingredientes = st.text_area("Ingredientes (separados por coma)", value=row['ingredientes'])
-                        edit_pasos = st.text_area("Instrucciones", value=row['pasos'] if row['pasos'] else "")
+                        edit_ingredientes = st.text_area("Ingredientes (separados por coma)", value=row.get('ingredientes', ''))
+                        edit_pasos = st.text_area("Instrucciones", value=row.get('pasos') if row.get('pasos') else "")
                         
                         st.markdown("##### Modificar o Cargar Video")
-                        edit_video_url = st.text_input("Enlace web de video (dejar vacío si vas a subir archivo)", value=row['origen_video'] if row['tipo_video'] == 'enlace' else "")
+                        edit_video_url = st.text_input("Enlace web de video (dejar vacío si vas a subir archivo)", value=row.get('origen_video', '') if row.get('tipo_video') == 'enlace' else "")
                         edit_video_file = st.file_uploader("O subir/reemplazar video desde la PC (.mp4, .mov)", type=["mp4", "mov", "avi", "mkv"])
                         
                         col_btn1, col_btn2 = st.columns([1, 1])
@@ -214,10 +195,9 @@ with tab_ver:
                             borrar_receta = st.form_submit_button("🗑️ Eliminar Receta")
 
                         if guardar_cambios:
-                            nuevo_tipo_video = row['tipo_video']
-                            nuevo_origen_video = row['origen_video']
+                            nuevo_tipo_video = row.get('tipo_video', 'ninguno')
+                            nuevo_origen_video = row.get('origen_video', '')
                             
-                            # Si se sube un nuevo archivo desde la PC
                             if edit_video_file is not None:
                                 nombre_archivo_seguro = f"{edit_nombre.strip().replace(' ', '_').lower()}_{edit_video_file.name}"
                                 ruta_guardado = os.path.join(CARPETA_VIDEOS, nombre_archivo_seguro)
@@ -229,28 +209,22 @@ with tab_ver:
                                 nuevo_tipo_video = "enlace"
                                 nuevo_origen_video = edit_video_url.strip()
 
-                            c.execute("""
-                                UPDATE recetas 
-                                SET nombre = ?, tipo_sabor = ?, metodo_coccion = ?, es_airfryer = ?, ingredientes = ?, pasos = ?, tipo_video = ?, origen_video = ?
-                                WHERE id = ?
-                            """, (
-                                edit_nombre.strip(), 
-                                edit_sabor, 
-                                edit_metodo, 
-                                1 if edit_metodo == "Freidora de aire" else 0,
-                                edit_ingredientes.strip().lower(), 
-                                edit_pasos.strip(), 
-                                nuevo_tipo_video, 
-                                nuevo_origen_video, 
-                                row['id']
-                            ))
-                            conn.commit()
+                            supabase.table("recetas").update({
+                                "nombre": edit_nombre.strip(),
+                                "tipo_sabor": edit_sabor,
+                                "metodo_coccion": edit_metodo,
+                                "es_airfryer": 1 if edit_metodo == "Freidora de aire" else 0,
+                                "ingredientes": edit_ingredientes.strip().lower(),
+                                "pasos": edit_pasos.strip(),
+                                "tipo_video": nuevo_tipo_video,
+                                "origen_video": nuevo_origen_video
+                            }).eq("id", row['id']).execute()
+
                             st.success("¡Receta actualizada!")
                             st.rerun()
 
                         if borrar_receta:
-                            c.execute("DELETE FROM recetas WHERE id = ?", (row['id'],))
-                            conn.commit()
+                            supabase.table("recetas").delete().eq("id", row['id']).execute()
                             st.warning(f"Receta '{row['nombre']}' eliminada.")
                             st.rerun()
 
@@ -259,13 +233,13 @@ with tab_ver:
 # ========================================================
 with tab_indice:
     st.subheader("🔤 Índice Alfabético de Recetas")
-    df_indice = pd.read_sql("SELECT * FROM recetas ORDER BY UPPER(nombre) ASC", conn)
+    df_indice = obtener_todas_recetas()
     
     if df_indice.empty:
         st.info("Aún no tienes recetas cargadas en el recetario.")
     else:
         df_indice['letra'] = df_indice['nombre'].str[0].str.upper()
-        letras_disponibles = sorted(df_indice['letra'].unique())
+        letras_disponibles = sorted(df_indice['letra'].dropna().unique())
         
         st.markdown(f"**Letras disponibles:** {' • '.join(letras_disponibles)}")
         st.markdown("---")
@@ -275,27 +249,27 @@ with tab_indice:
             recetas_letra = df_indice[df_indice['letra'] == letra]
             
             for _, row in recetas_letra.iterrows():
-                tag_sabor = "🍰 Dulce" if row['tipo_sabor'] == "Dulce" else "🧂 Salada"
-                tag_metodo = row['metodo_coccion'] if row['metodo_coccion'] else "Al Horno"
-                tag_estado = "⭐ Probada" if row['probada'] == 1 else "⏳ Por probar"
+                tag_sabor = "🍰 Dulce" if row.get('tipo_sabor') == "Dulce" else "🧂 Salada"
+                tag_metodo = row.get('metodo_coccion') if row.get('metodo_coccion') else "Al Horno"
+                tag_estado = "⭐ Probada" if row.get('probada') == 1 else "⏳ Por probar"
                 
                 with st.expander(f"{row['nombre']} — [{tag_sabor} | {tag_metodo}] ({tag_estado})"):
                     col1, col2 = st.columns(2)
                     with col1:
                         st.markdown("##### Ingredientes")
-                        for ing in [i.strip() for i in row['ingredientes'].split(",") if i.strip()]:
+                        for ing in [i.strip() for i in str(row.get('ingredientes', '')).split(",") if i.strip()]:
                             st.markdown(f"- {ing}")
                     with col2:
                         st.markdown("##### Preparación")
-                        st.write(row['pasos'] if row['pasos'] else "Sin pasos.")
-                        if row['origen_video']:
-                            if row['tipo_video'] == 'local' and os.path.exists(row['origen_video']):
+                        st.write(row.get('pasos') if row.get('pasos') else "Sin pasos.")
+                        if row.get('origen_video'):
+                            if row.get('tipo_video') == 'local' and os.path.exists(row['origen_video']):
                                 st.video(row['origen_video'])
-                            elif row['tipo_video'] == 'enlace':
+                            elif row.get('tipo_video') == 'enlace':
                                 st.video(row['origen_video'])
 
 # ========================================================
-# TAB 3: AGREGAR NUEVA RECETA (CON RECARGA INMEDIATA)
+# TAB 3: AGREGAR NUEVA RECETA
 # ========================================================
 with tab_agregar:
     st.subheader("Cargar una nueva receta")
@@ -338,21 +312,18 @@ with tab_agregar:
                     tipo_final = "enlace"
                     origen_final = video_url.strip()
                 
-                c.execute("""
-                    INSERT INTO recetas (nombre, tipo_sabor, metodo_coccion, es_airfryer, ingredientes, pasos, tipo_video, origen_video, probada)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    nombre.strip(), 
-                    tipo_sabor, 
-                    metodo_coccion, 
-                    1 if metodo_coccion == "Freidora de aire" else 0, 
-                    ingredientes.strip().lower(), 
-                    pasos.strip(), 
-                    tipo_final, 
-                    origen_final, 
-                    1 if probada_inicial else 0
-                ))
-                conn.commit()
+                supabase.table("recetas").insert({
+                    "nombre": nombre.strip(),
+                    "tipo_sabor": tipo_sabor,
+                    "metodo_coccion": metodo_coccion,
+                    "es_airfryer": 1 if metodo_coccion == "Freidora de aire" else 0,
+                    "ingredientes": ingredientes.strip().lower(),
+                    "pasos": pasos.strip(),
+                    "tipo_video": tipo_final,
+                    "origen_video": origen_final,
+                    "probada": 1 if probada_inicial else 0
+                }).execute()
+
                 st.success(f"¡Receta '{nombre}' guardada con éxito!")
                 st.rerun()
 
@@ -372,55 +343,54 @@ with tab_despensa:
     if ingredientes_disponibles:
         set_casa = {item.strip().lower() for item in ingredientes_disponibles.split(",") if item.strip()}
         
-        query_todas = "SELECT * FROM recetas WHERE 1=1"
-        params_d = []
-        if solo_probadas:
-            query_todas += " AND probada = 1"
-        if filtro_metodo_despensa != "Todos":
-            query_todas += " AND metodo_coccion = ?"
-            params_d.append(filtro_metodo_despensa)
+        todas_df = obtener_todas_recetas()
+        if not todas_df.empty:
+            if solo_probadas:
+                todas_df = todas_df[todas_df['probada'] == 1]
+            if filtro_metodo_despensa != "Todos":
+                todas_df = todas_df[todas_df['metodo_coccion'] == filtro_metodo_despensa]
+                
+            completas = []
+            parciales = []
             
-        todas_df = pd.read_sql(query_todas, conn, params=params_d)
-        
-        completas = []
-        parciales = []
-        
-        for _, fila in todas_df.iterrows():
-            items_receta = [i.strip().lower() for i in fila['ingredientes'].split(",") if i.strip()]
-            ingredientes_presentes = 0
-            faltantes = []
+            for _, fila in todas_df.iterrows():
+                items_receta = [i.strip().lower() for i in str(fila.get('ingredientes', '')).split(",") if i.strip()]
+                ingredientes_presentes = 0
+                faltantes = []
+                
+                for ing_receta in items_receta:
+                    if any(ing_casa in ing_receta for ing_casa in set_casa):
+                        ingredientes_presentes += 1
+                    else:
+                        faltantes.append(ing_receta)
+                
+                total_ing = len(items_receta)
+                if total_ing > 0:
+                    porcentaje = (ingredientes_presentes / total_ing) * 100
+                    if porcentaje == 100:
+                        completas.append((fila, faltantes))
+                    elif ingredientes_presentes > 0:
+                        parciales.append((fila, faltantes, porcentaje))
             
-            for ing_receta in items_receta:
-                if any(ing_casa in ing_receta for ing_casa in set_casa):
-                    ingredientes_presentes += 1
-                else:
-                    faltantes.append(ing_receta)
-            
-            total_ing = len(items_receta)
-            if total_ing > 0:
-                porcentaje = (ingredientes_presentes / total_ing) * 100
-                if porcentaje == 100:
-                    completas.append((fila, faltantes))
-                elif ingredientes_presentes > 0:
-                    parciales.append((fila, faltantes, porcentaje))
-        
-        if completas:
-            st.success(f"🎉 **¡Recetas listas para cocinar ({len(completas)})!**")
-            for r, _ in completas:
-                tipo_txt = f"{r['tipo_sabor']} | {r['metodo_coccion']}"
-                with st.expander(f"🟢 {r['nombre']} ({tipo_txt})"):
-                    st.write(f"**Ingredientes:** {r['ingredientes']}")
-                    st.write(f"**Pasos:** {r['pasos']}")
-                    if r['origen_video']:
-                        st.video(r['origen_video'])
-                        
-        if parciales:
-            st.markdown("### 🟡 Recetas a las que les falta poco:")
-            parciales.sort(key=lambda x: x[2], reverse=True)
-            for r, faltantes, pct in parciales:
-                tipo_txt = f"{r['tipo_sabor']} | {r['metodo_coccion']}"
-                with st.expander(f"🟡 {r['nombre']} ({tipo_txt}) — Coincidencia: {pct:.0f}%"):
-                    st.write(f"**Te falta:** {', '.join(faltantes)}")
-                    st.write(f"**Ingredientes:** {r['ingredientes']}")
-                    if r['origen_video']:
-                        st.video(r['origen_video'])
+            if completas:
+                st.success(f"🎉 **¡Recetas listas para cocinar ({len(completas)})!**")
+                for r, _ in completas:
+                    tipo_txt = f"{r.get('tipo_sabor')} | {r.get('metodo_coccion')}"
+                    with st.expander(f"🟢 {r['nombre']} ({tipo_txt})"):
+                        st.write(f"**Ingredientes:** {r.get('ingredientes')}")
+                        st.write(f"**Pasos:** {r.get('pasos')}")
+                        if r.get('origen_video'):
+                            st.video(r['origen_video'])
+                            
+            if parciales:
+                st.markdown("### 🟡 Recetas a las que les falta poco:")
+                parciales.sort(key=lambda x: x[2], reverse=True)
+                for r, faltantes, pct in parciales:
+                    tipo_txt = f"{r.get('tipo_sabor')} | {r.get('metodo_coccion')}"
+                    with st.expander(f"🟡 {r['nombre']} ({tipo_txt}) — Coincidencia: {pct:.0f}%"):
+                        st.write(f"**Te falta:** {', '.join(faltantes)}")
+                        st.write(f"**Ingredientes:** {r.get('ingredientes')}")
+                        if r.get('origen_video'):
+                            st.video(r['origen_video'])
+        else:
+            st.info("No hay recetas disponibles.")
