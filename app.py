@@ -18,6 +18,17 @@ def init_supabase() -> Client:
 
 supabase = init_supabase()
 
+# --- SEGURIDAD: MODO ADMINISTRADOR ---
+admin_pwd = st.secrets.get("ADMIN_PASSWORD", "admin123")
+st.sidebar.title("🔐 Acceso")
+password_ingresada = st.sidebar.text_input("Clave de Administrador", type="password")
+es_admin = (password_ingresada == admin_pwd)
+
+if es_admin:
+    st.sidebar.success("Modo Administrador Activo ✅")
+else:
+    st.sidebar.info("Modo de Solo Lectura 👁️")
+
 def obtener_todas_recetas():
     res = supabase.table("recetas").select("*").order("nombre").execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
@@ -73,14 +84,22 @@ OPCIONES_METODO = ["Al Horno", "A la Olla / Cacerola", "Freidora de aire", "Sart
 
 # --- ENCABEZADO ---
 st.title("🍳 Mi Recetario Inteligente")
-st.title("🍳 Creado por E.D.F.")
+st.title("Creado por E.D.F.")
 
-tab_ver, tab_indice, tab_agregar, tab_despensa = st.tabs([
-    "📖 Ver y Editar Recetas",
-    "🔤 Índice A-Z",
-    "➕ Cargar Nueva Receta", 
-    "🔍 ¿Qué cocino con lo que tengo?"
-])
+# Pestañas condicionales según el rol
+if es_admin:
+    tab_ver, tab_indice, tab_agregar, tab_despensa = st.tabs([
+        "📖 Ver y Editar Recetas",
+        "🔤 Índice A-Z",
+        "➕ Cargar Nueva Receta", 
+        "🔍 ¿Qué cocino con lo que tengo?"
+    ])
+else:
+    tab_ver, tab_indice, tab_despensa = st.tabs([
+        "📖 Ver Recetas",
+        "🔤 Índice A-Z",
+        "🔍 ¿Qué cocino con lo que tengo?"
+    ])
 
 # ========================================================
 # TAB 1: VER, BUSCAR, EDITAR Y ELIMINAR RECETAS
@@ -140,7 +159,10 @@ with tab_ver:
             tag_estado = "⭐ Para Repetir" if row.get('probada') == 1 else "⏳ Por Probar"
             
             with st.expander(f"{row['nombre']} — [{tag_sabor} | {tag_metodo}] — {tag_estado}"):
-                sub_ver, sub_editar = st.tabs(["👁️ Ver Receta", "✏️ Modificar / Eliminar"])
+                if es_admin:
+                    sub_ver, sub_editar = st.tabs(["👁️ Ver Receta", "✏️ Modificar / Eliminar"])
+                else:
+                    sub_ver = st.container()
                 
                 # --- VISTA NORMAL ---
                 with sub_ver:
@@ -153,8 +175,8 @@ with tab_ver:
                         st.markdown("#### 📝 Preparación")
                         st.write(row.get('pasos') if row.get('pasos') else "Sin pasos detallados.")
                         
-                        marcado = st.checkbox("¿Receta probada / Para repetir?", value=bool(row.get('probada')), key=f"ver_probada_{row['id']}")
-                        if marcado != bool(row.get('probada')):
+                        marcado = st.checkbox("¿Receta probada / Para repetir?", value=bool(row.get('probada')), key=f"ver_probada_{row['id']}", disabled=not es_admin)
+                        if es_admin and marcado != bool(row.get('probada')):
                             supabase.table("recetas").update({"probada": 1 if marcado else 0}).eq("id", row['id']).execute()
                             st.rerun()
 
@@ -170,63 +192,64 @@ with tab_ver:
                         else:
                             st.info("Sin video asignado.")
 
-                # --- MODO EDICIÓN ---
-                with sub_editar:
-                    with st.form(f"form_editar_{row['id']}"):
-                        edit_nombre = st.text_input("Nombre", value=row['nombre'])
-                        col_e1, col_e2 = st.columns(2)
-                        with col_e1:
-                            edit_sabor = st.radio("Sabor", ["Salada", "Dulce"], index=0 if row.get('tipo_sabor') == "Salada" else 1, horizontal=True)
-                        with col_e2:
-                            idx_metodo = OPCIONES_METODO.index(metodo_nombre) if metodo_nombre in OPCIONES_METODO else 0
-                            edit_metodo = st.selectbox("Método de cocción", OPCIONES_METODO, index=idx_metodo)
-                        
-                        edit_ingredientes = st.text_area("Ingredientes (separados por coma)", value=row.get('ingredientes', ''))
-                        edit_pasos = st.text_area("Instrucciones", value=row.get('pasos') if row.get('pasos') else "")
-                        
-                        st.markdown("##### Modificar o Cargar Video")
-                        edit_video_url = st.text_input("Enlace web de video (dejar vacío si vas a subir archivo)", value=row.get('origen_video', '') if row.get('tipo_video') == 'enlace' else "")
-                        edit_video_file = st.file_uploader("O subir/reemplazar video desde la PC (.mp4, .mov)", type=["mp4", "mov", "avi", "mkv"])
-                        
-                        col_btn1, col_btn2 = st.columns([1, 1])
-                        with col_btn1:
-                            guardar_cambios = st.form_submit_button("💾 Guardar Cambios")
-                        with col_btn2:
-                            borrar_receta = st.form_submit_button("🗑️ Eliminar Receta")
-
-                        if guardar_cambios:
-                            nuevo_tipo_video = row.get('tipo_video', 'ninguno')
-                            nuevo_origen_video = row.get('origen_video', '')
+                # --- MODO EDICIÓN (SOLO ADMINISTRADOR) ---
+                if es_admin:
+                    with sub_editar:
+                        with st.form(f"form_editar_{row['id']}"):
+                            edit_nombre = st.text_input("Nombre", value=row['nombre'])
+                            col_e1, col_e2 = st.columns(2)
+                            with col_e1:
+                                edit_sabor = st.radio("Sabor", ["Salada", "Dulce"], index=0 if row.get('tipo_sabor') == "Salada" else 1, horizontal=True)
+                            with col_e2:
+                                idx_metodo = OPCIONES_METODO.index(metodo_nombre) if metodo_nombre in OPCIONES_METODO else 0
+                                edit_metodo = st.selectbox("Método de cocción", OPCIONES_METODO, index=idx_metodo)
                             
-                            if edit_video_file is not None:
-                                nombre_archivo_seguro = f"{edit_nombre.strip().replace(' ', '_').lower()}_{edit_video_file.name}"
-                                ruta_guardado = os.path.join(CARPETA_VIDEOS, nombre_archivo_seguro)
-                                with open(ruta_guardado, "wb") as f:
-                                    f.write(edit_video_file.getbuffer())
-                                nuevo_tipo_video = "local"
-                                nuevo_origen_video = ruta_guardado
-                            elif edit_video_url.strip():
-                                nuevo_tipo_video = "enlace"
-                                nuevo_origen_video = edit_video_url.strip()
+                            edit_ingredientes = st.text_area("Ingredientes (separados por coma)", value=row.get('ingredientes', ''))
+                            edit_pasos = st.text_area("Instrucciones", value=row.get('pasos') if row.get('pasos') else "")
+                            
+                            st.markdown("##### Modificar o Cargar Video")
+                            edit_video_url = st.text_input("Enlace web de video (dejar vacío si vas a subir archivo)", value=row.get('origen_video', '') if row.get('tipo_video') == 'enlace' else "")
+                            edit_video_file = st.file_uploader("O subir/reemplazar video desde la PC (.mp4, .mov)", type=["mp4", "mov", "avi", "mkv"])
+                            
+                            col_btn1, col_btn2 = st.columns([1, 1])
+                            with col_btn1:
+                                guardar_cambios = st.form_submit_button("💾 Guardar Cambios")
+                            with col_btn2:
+                                borrar_receta = st.form_submit_button("🗑️ Eliminar Receta")
 
-                            supabase.table("recetas").update({
-                                "nombre": edit_nombre.strip(),
-                                "tipo_sabor": edit_sabor,
-                                "metodo_coccion": edit_metodo,
-                                "es_airfryer": 1 if edit_metodo == "Freidora de aire" else 0,
-                                "ingredientes": edit_ingredientes.strip().lower(),
-                                "pasos": edit_pasos.strip(),
-                                "tipo_video": nuevo_tipo_video,
-                                "origen_video": nuevo_origen_video
-                            }).eq("id", row['id']).execute()
+                            if guardar_cambios:
+                                nuevo_tipo_video = row.get('tipo_video', 'ninguno')
+                                nuevo_origen_video = row.get('origen_video', '')
+                                
+                                if edit_video_file is not None:
+                                    nombre_archivo_seguro = f"{edit_nombre.strip().replace(' ', '_').lower()}_{edit_video_file.name}"
+                                    ruta_guardado = os.path.join(CARPETA_VIDEOS, nombre_archivo_seguro)
+                                    with open(ruta_guardado, "wb") as f:
+                                        f.write(edit_video_file.getbuffer())
+                                    nuevo_tipo_video = "local"
+                                    nuevo_origen_video = ruta_guardado
+                                elif edit_video_url.strip():
+                                    nuevo_tipo_video = "enlace"
+                                    nuevo_origen_video = edit_video_url.strip()
 
-                            st.success("¡Receta actualizada!")
-                            st.rerun()
+                                supabase.table("recetas").update({
+                                    "nombre": edit_nombre.strip(),
+                                    "tipo_sabor": edit_sabor,
+                                    "metodo_coccion": edit_metodo,
+                                    "es_airfryer": 1 if edit_metodo == "Freidora de aire" else 0,
+                                    "ingredientes": edit_ingredientes.strip().lower(),
+                                    "pasos": edit_pasos.strip(),
+                                    "tipo_video": nuevo_tipo_video,
+                                    "origen_video": nuevo_origen_video
+                                }).eq("id", row['id']).execute()
 
-                        if borrar_receta:
-                            supabase.table("recetas").delete().eq("id", row['id']).execute()
-                            st.warning(f"Receta '{row['nombre']}' eliminada.")
-                            st.rerun()
+                                st.success("¡Receta actualizada!")
+                                st.rerun()
+
+                            if borrar_receta:
+                                supabase.table("recetas").delete().eq("id", row['id']).execute()
+                                st.warning(f"Receta '{row['nombre']}' eliminada.")
+                                st.rerun()
 
 # ========================================================
 # TAB 2: ÍNDICE ALFABÉTICO (A-Z)
@@ -269,63 +292,64 @@ with tab_indice:
                                 st.video(row['origen_video'])
 
 # ========================================================
-# TAB 3: AGREGAR NUEVA RECETA
+# TAB 3: AGREGAR NUEVA RECETA (SOLO ADMINISTRADOR)
 # ========================================================
-with tab_agregar:
-    st.subheader("Cargar una nueva receta")
-    
-    with st.form("form_alta_receta", clear_on_submit=True):
-        nombre = st.text_input("Nombre de la receta *")
+if es_admin:
+    with tab_agregar:
+        st.subheader("Cargar una nueva receta")
         
-        col_c1, col_c2 = st.columns(2)
-        with col_c1:
-            tipo_sabor = st.selectbox("Sabor *", ["Salada", "Dulce"])
-        with col_c2:
-            metodo_coccion = st.selectbox("Método de cocción *", OPCIONES_METODO)
+        with st.form("form_alta_receta", clear_on_submit=True):
+            nombre = st.text_input("Nombre de la receta *")
             
-        ingredientes = st.text_area("Ingredientes (separados por coma, ej: 500 gr harina, 10 gr sal) *")
-        pasos = st.text_area("Instrucciones / Paso a paso")
-        
-        st.markdown("#### Opciones de Video")
-        video_url = st.text_input("Enlace web de video (YouTube, TikTok, Instagram - Opcional)")
-        video_subido = st.file_uploader("O subir archivo de video (.mp4, .mov)", type=["mp4", "mov", "avi", "mkv"])
+            col_c1, col_c2 = st.columns(2)
+            with col_c1:
+                tipo_sabor = st.selectbox("Sabor *", ["Salada", "Dulce"])
+            with col_c2:
+                metodo_coccion = st.selectbox("Método de cocción *", OPCIONES_METODO)
+                
+            ingredientes = st.text_area("Ingredientes (separados por coma, ej: 500 gr harina, 10 gr sal) *")
+            pasos = st.text_area("Instrucciones / Paso a paso")
             
-        probada_inicial = st.checkbox("¿Ya la probaste y es para repetir?")
-        
-        btn_guardar = st.form_submit_button("💾 Guardar Receta", type="primary")
-        
-        if btn_guardar:
-            if not nombre.strip() or not ingredientes.strip():
-                st.error("Por favor completa al menos el nombre y los ingredientes.")
-            else:
-                tipo_final = "ninguno"
-                origen_final = ""
+            st.markdown("#### Opciones de Video")
+            video_url = st.text_input("Enlace web de video (YouTube, TikTok, Instagram - Opcional)")
+            video_subido = st.file_uploader("O subir archivo de video (.mp4, .mov)", type=["mp4", "mov", "avi", "mkv"])
                 
-                if video_subido is not None:
-                    nombre_archivo_seguro = f"{nombre.strip().replace(' ', '_').lower()}_{video_subido.name}"
-                    ruta_guardado = os.path.join(CARPETA_VIDEOS, nombre_archivo_seguro)
-                    with open(ruta_guardado, "wb") as f:
-                        f.write(video_subido.getbuffer())
-                    tipo_final = "local"
-                    origen_final = ruta_guardado
-                elif video_url.strip():
-                    tipo_final = "enlace"
-                    origen_final = video_url.strip()
-                
-                supabase.table("recetas").insert({
-                    "nombre": nombre.strip(),
-                    "tipo_sabor": tipo_sabor,
-                    "metodo_coccion": metodo_coccion,
-                    "es_airfryer": 1 if metodo_coccion == "Freidora de aire" else 0,
-                    "ingredientes": ingredientes.strip().lower(),
-                    "pasos": pasos.strip(),
-                    "tipo_video": tipo_final,
-                    "origen_video": origen_final,
-                    "probada": 1 if probada_inicial else 0
-                }).execute()
+            probada_inicial = st.checkbox("¿Ya la probaste y es para repetir?")
+            
+            btn_guardar = st.form_submit_button("💾 Guardar Receta", type="primary")
+            
+            if btn_guardar:
+                if not nombre.strip() or not ingredientes.strip():
+                    st.error("Por favor completa al menos el nombre y los ingredientes.")
+                else:
+                    tipo_final = "ninguno"
+                    origen_final = ""
+                    
+                    if video_subido is not None:
+                        nombre_archivo_seguro = f"{nombre.strip().replace(' ', '_').lower()}_{video_subido.name}"
+                        ruta_guardado = os.path.join(CARPETA_VIDEOS, nombre_archivo_seguro)
+                        with open(ruta_guardado, "wb") as f:
+                            f.write(video_subido.getbuffer())
+                        tipo_final = "local"
+                        origen_final = ruta_guardado
+                    elif video_url.strip():
+                        tipo_final = "enlace"
+                        origen_final = video_url.strip()
+                    
+                    supabase.table("recetas").insert({
+                        "nombre": nombre.strip(),
+                        "tipo_sabor": tipo_sabor,
+                        "metodo_coccion": metodo_coccion,
+                        "es_airfryer": 1 if metodo_coccion == "Freidora de aire" else 0,
+                        "ingredientes": ingredientes.strip().lower(),
+                        "pasos": pasos.strip(),
+                        "tipo_video": tipo_final,
+                        "origen_video": origen_final,
+                        "probada": 1 if probada_inicial else 0
+                    }).execute()
 
-                st.success(f"¡Receta '{nombre}' guardada con éxito!")
-                st.rerun()
+                    st.success(f"¡Receta '{nombre}' guardada con éxito!")
+                    st.rerun()
 
 # ========================================================
 # TAB 4: BUSCADOR POR DESPENSA
